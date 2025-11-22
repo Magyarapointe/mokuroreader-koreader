@@ -2,12 +2,28 @@
 
 All notable changes to the Mokuro Reader plugin will be documented in this file.
 
-## [6.0.0] - 2025-11-10 - STABLE RELEASE 🎉
+## [7.0.0] - 2025-11-22 - STABLE RELEASE 🎉
+
+### Added
+- **SENTENCE MINING SUPPORT!** Context is now saved when adding words to VocabBuilder or Anki
+- When you select a word and add it to VocabBuilder, the surrounding text from the speech bubble is automatically included as context
+- Works with both VocabBuilder and Anki plugins
+
+### Fixed
+- Dual page mode coordinate mapping improvements
+- Better context calculation with CJK space handling
+
+### Documentation
+- Added KOReader version requirement (v2025.08+) to README
+- Documented sentence mining feature
+
+## [6.0.0] - 2025-11-10
 
 ### Added
 - **PERFECT TEXT SELECTION FOR JAPANESE!** Character-by-character precision
 - Added padding spaces at start of text to make first character easily selectable
 - Full dictionary integration with automatic CJK space removal
+- **DUAL PAGE MODE SUPPORT!** Works correctly in two-page reading mode
 
 ### Summary
 This version provides fully working text selection with dictionary integration:
@@ -16,13 +32,14 @@ This version provides fully working text selection with dictionary integration:
 - ✅ Release to open dictionary with selected word (CJK spaces automatically removed)
 - ✅ All text selection edge cases handled properly
 - ✅ First character is now easily selectable with padding
+- ✅ Dual page mode works correctly
 
 ### Technical Highlights (v5.3 → v6.0 journey)
 - v5.3: Fixed callback signature and widget creation order
 - v5.4: Switched to ScrollTextWidget (proper KOReader widget)
 - v5.5: Fixed access to internal TextBoxWidget methods
 - v5.6: Fixed closure variable capture (ui and mokuro_popup)
-- v6.0: Added text padding for first character selection
+- v6.0: Added text padding for first character selection + dual page support
 
 ## [1.1.2] - 2025-11-09
 
@@ -85,26 +102,15 @@ This version provides fully working text selection with dictionary integration:
 - JSON parsing with rapidjson
 - G_reader_settings integration for font size preferences
 
-### Known Limitations
-- Buttons in dictionary popup cannot be hidden (tweak_buttons_func not supported in some KOReader versions)
-- Some older KOReader versions may not support all features
+### Requirements
+- **KOReader v2025.08 or higher** - This is the release that introduced `lib/ffi/archiver.so`, which is necessary for the plugin to work. Earlier versions (e.g., v2025.04) will crash when loading the plugin.
 
 ## Future Improvements
 
-### Planned for v1.1.0
-- [ ] Hide dictionary popup buttons (if/when KOReader support improves)
-- [ ] Custom popup design without dependency on DictQuickLookup
-- [ ] Page navigation from popup
-- [ ] Highlight current text bubble
-
-### Planned for v1.2.0
+### Planned
 - [ ] Support for multiple .mokuro files in one CBZ
 - [ ] Text-to-speech integration
 - [ ] Export OCR text to notes
 - [ ] Statistics (pages read, words looked up)
-
-### Planned for v2.0.0
-- [ ] Real-time mokuro processing (optional)
-- [ ] Custom OCR engine integration
-- [ ] Reading progress tracking
-- [ ] Sync with external services
+- [ ] Highlight current text bubble
+- [ ] Page navigation from popup

@@ -1,6 +1,8 @@
 --[[
-    Mokuro Reader Plugin for KOReader - VERSION 4
+    Mokuro Reader Plugin for KOReader - VERSION 7
     Using ScrollHtmlWidget with CJK space cleanup for Japanese support
+    + Dual page mode support
+    + Sentence mining support for VocabBuilder and Anki plugins
 ]]--
 
 local logger = require("logger")
@@ -18,7 +20,7 @@ logger.info("MokuroReader: Loading plugin module...")
 local MokuroParser = require("mokuroparser")
 
 local MokuroReader = WidgetContainer:extend{
-    name = "mokuro",
+    name = "Mokuro",  -- Capital M for Anki plugin compatibility (self.ui['Mokuro'])
     is_doc_only = true,
     mokuro_data = nil,
     parser = nil,
@@ -164,6 +166,49 @@ local function strip_cjk_spaces(s)
     return result
 end
 
+--[[
+    Calculate context from full block text and selected word
+    Returns prev_context, next_context (always strings, never nil)
+]]--
+local function calculateContext(full_text, selected_text)
+    if not full_text or not selected_text then
+        return "", ""
+    end
+    
+    -- Clean both texts for comparison (remove CJK spaces)
+    local clean_full = strip_cjk_spaces(full_text)
+    local clean_selected = strip_cjk_spaces(selected_text)
+    
+    if not clean_full or clean_full == "" or not clean_selected or clean_selected == "" then
+        return "", ""
+    end
+    
+    -- Find the selected text in the full text
+    local start_pos, end_pos = clean_full:find(clean_selected, 1, true)
+    
+    if start_pos then
+        local prev_context = ""
+        local next_context = ""
+        
+        if start_pos > 1 then
+            prev_context = clean_full:sub(1, start_pos - 1)
+        end
+        
+        if end_pos < #clean_full then
+            next_context = clean_full:sub(end_pos + 1)
+        end
+        
+        logger.info("MokuroReader: calculated context")
+        logger.info("  prev_context:", prev_context)
+        logger.info("  next_context:", next_context)
+        
+        return prev_context, next_context
+    end
+    
+    logger.warn("MokuroReader: could not find selected text in block, returning empty context")
+    return "", ""
+end
+
 function MokuroReader:onMokuroTap(ges)
     logger.info("MokuroReader: ✓✓✓ TAP DETECTED! ✓✓✓")
     
@@ -173,7 +218,26 @@ function MokuroReader:onMokuroTap(ges)
     end
     
     local page_no = self.ui:getCurrentPage()
-    logger.info("MokuroReader: Current page:", page_no, "Tap at:", ges.pos.x, ges.pos.y)
+    local tap_x, tap_y = ges.pos.x, ges.pos.y
+    
+    -- Check if we're in dual page mode (comicreader plugin)
+    local is_dual_page = self.ui.paging and self.ui.paging.isDualPageEnabled and self.ui.paging:isDualPageEnabled()
+    
+    if is_dual_page and self.ui.view and self.ui.view.getDualPagePosition then
+        -- Use comicreader's dual page position calculation
+        local dual_pos = self.ui.view:getDualPagePosition(ges.pos)
+        page_no = dual_pos.page
+        -- dual_pos.x and dual_pos.y are already in page coordinates (unscaled)
+        -- We'll pass this info to findBlockAtPosition
+        logger.info("MokuroReader: Dual page mode - Page:", page_no, "Pos:", dual_pos.x, dual_pos.y, "Zoom:", dual_pos.zoom)
+        
+        -- Store dual page info for findBlockAtPosition
+        self._dual_page_info = dual_pos
+    else
+        self._dual_page_info = nil
+    end
+    
+    logger.info("MokuroReader: Current page:", page_no, "Tap at:", tap_x, tap_y)
     
     -- Get page data
     local page_data = self.parser:getPageData(self.mokuro_data, page_no)
@@ -193,14 +257,14 @@ function MokuroReader:onMokuroTap(ges)
     end
     
     -- Get the text from the tapped block
-    local text = self.parser:getBlockText(tapped_block)
+    local block_text = self.parser:getBlockText(tapped_block)
     
-    if not text or text == "" then
+    if not block_text or block_text == "" then
         logger.warn("MokuroReader: Block has no text")
         return false
     end
     
-    logger.info("MokuroReader: Showing text popup for tapped block")
+    logger.info("MokuroReader: Showing text popup for block:", block_text)
     
     -- CRITICAL: Capture self references before creating callbacks
     -- Inside callbacks, 'self' will be mokuro_popup, not MokuroReader!
@@ -245,7 +309,7 @@ function MokuroReader:onMokuroTap(ges)
     -- ScrollTextWidget wraps TextBoxWidget internally and handles scrolling
     -- CRITICAL: dialog must point to the popup itself for proper event handling!
     -- Add padding spaces at the start to make first character selectable
-    local padded_text = "  " .. text  -- Two spaces for easy tap on first char
+    local padded_text = "  " .. block_text  -- Two spaces for easy tap on first char
     local text_widget = ScrollTextWidget:new{
         text = padded_text,
         face = face,
@@ -342,6 +406,24 @@ function MokuroReader:onMokuroTap(ges)
                     
                     logger.info("MokuroReader: Selected text:", selected_text)
                     logger.info("MokuroReader: Cleaned text:", cleaned_text)
+                    logger.info("MokuroReader: Block text:", block_text)
+                    
+                    -- Calculate context (block_text is captured in this closure)
+                    local prev_context, next_context = calculateContext(block_text, cleaned_text)
+                    
+                    -- Set ui.highlight.selected_text for VocabBuilder's "highlight" field
+                    if ui.highlight then
+                        ui.highlight.selected_text = {
+                            text = cleaned_text,
+                        }
+                        
+                        -- Inject our context into the highlight module
+                        -- VocabBuilder calls ui.highlight:getSelectedWordContext(15) to get context
+                        ui.highlight.getSelectedWordContext = function(self_highlight, nb_words)
+                            logger.info("MokuroReader: getSelectedWordContext called, returning mokuro context")
+                            return prev_context or "", next_context or ""
+                        end
+                    end
                     
                     -- Close the popup first (use captured local variable)
                     UIManager:close(mokuro_popup)
@@ -376,17 +458,89 @@ function MokuroReader:findBlockAtPosition(page_data, tap_pos)
     local img_w = page_data.img_width
     local img_h = page_data.img_height
     
+    local scale, offset_x, offset_y
+    
+    -- Check if we have dual page info from onMokuroTap
+    if self._dual_page_info then
+        -- Dual page mode: coordinates are already in page space (unscaled)
+        -- We just need to convert from page coordinates to mokuro image coordinates
+        local dual_pos = self._dual_page_info
+        
+        -- In dual page mode, getDualPagePosition returns coordinates relative to the page
+        -- These are already divided by zoom, so they're in document coordinates
+        -- We need to map these to mokuro image coordinates
+        
+        -- The page is scaled to fit, so we need to calculate how the mokuro image
+        -- maps to the document page coordinates
+        -- dual_pos.x and dual_pos.y are in document page coordinates (pixels)
+        
+        -- Get the actual page dimensions that were rendered
+        local page_w, page_h
+        if self.ui.view.page_states and #self.ui.view.page_states > 0 then
+            -- Find the state for our page
+            for _, state in ipairs(self.ui.view.page_states) do
+                if state.page == dual_pos.page then
+                    -- state.dimen is the scaled size on screen
+                    -- Unscale to get original page dimensions
+                    page_w = state.dimen.w / state.zoom
+                    page_h = state.dimen.h / state.zoom
+                    break
+                end
+            end
+        end
+        
+        if not page_w then
+            -- Fallback: assume page dimensions match image dimensions
+            page_w = img_w
+            page_h = img_h
+        end
+        
+        -- Now scale from document page coordinates to mokuro image coordinates
+        local scale_to_mokuro_x = img_w / page_w
+        local scale_to_mokuro_y = img_h / page_h
+        
+        -- Convert tap position to mokuro coordinates
+        local mokuro_x = dual_pos.x * scale_to_mokuro_x
+        local mokuro_y = dual_pos.y * scale_to_mokuro_y
+        
+        logger.dbg(string.format("MokuroReader: Dual page - Page coords (%d,%d) -> Mokuro coords (%d,%d)",
+                                dual_pos.x, dual_pos.y, mokuro_x, mokuro_y))
+        
+        -- Check each block using mokuro coordinates directly
+        for i, block in ipairs(page_data.blocks) do
+            local box = block.box
+            if box and #box >= 4 then
+                -- box coordinates are already in mokuro image space
+                local x1 = box[1]
+                local y1 = box[2]
+                local x2 = box[3]
+                local y2 = box[4]
+                
+                -- Check if tap is inside this block
+                if mokuro_x >= x1 and mokuro_x <= x2 and
+                   mokuro_y >= y1 and mokuro_y <= y2 then
+                    logger.info(string.format("MokuroReader: Found block %d at tap position (dual page)", i))
+                    return block
+                end
+            end
+        end
+        
+        logger.dbg("MokuroReader: No block found at tap position (dual page)")
+        return nil
+    end
+    
+    -- Single page mode: original logic
     -- Calculate how the image is scaled on screen
     -- KOReader fits the image to screen, so we need to calculate the scale
     local scale_w = screen_w / img_w
     local scale_h = screen_h / img_h
-    local scale = math.min(scale_w, scale_h)  -- Fit to screen
+    scale = math.min(scale_w, scale_h)  -- Fit to screen
     
     -- Calculate offsets (image is centered)
     local scaled_w = img_w * scale
     local scaled_h = img_h * scale
-    local offset_x = (screen_w - scaled_w) / 2
-    local offset_y = (screen_h - scaled_h) / 2
+    offset_x = (screen_w - scaled_w) / 2
+    offset_y = (screen_h - scaled_h) / 2
     
     logger.dbg(string.format("MokuroReader: Image %dx%d, Screen %dx%d, Scale %.3f, Offset %d,%d",
                             img_w, img_h, screen_w, screen_h, scale, offset_x, offset_y))
@@ -494,6 +648,8 @@ Tap on text bubbles to see the OCR'd text in a popup at the bottom.
 
 Hold and drag your finger to select text, then release to look it up in your dictionaries.
 For Japanese: Spaces between characters are automatically removed for proper dictionary lookup!
+
+NEW: Sentence mining support! When you add words to VocabBuilder, the surrounding text from the bubble is saved as context.
 
 Font size can be adjusted in the Mokuro Reader menu.]]),
                         timeout = 10,
