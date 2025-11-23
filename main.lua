@@ -256,19 +256,31 @@ function MokuroReader:onMokuroTap(ges)
         return false  -- Let page turning work
     end
     
-    -- Get the text from the tapped block
-    local block_text = self.parser:getBlockText(tapped_block)
+    -- Show the popup for this block
+    return self:showMokuroPopup(tapped_block)
+end
+
+function MokuroReader:showMokuroPopup(block)
+    -- Get the text from the block
+    local block_text = self.parser:getBlockText(block)
     
     if not block_text or block_text == "" then
         logger.warn("MokuroReader: Block has no text")
         return false
     end
     
+    return self:showMokuroPopupWithText(block, block_text)
+end
+
+function MokuroReader:showMokuroPopupWithText(block, block_text)
     logger.info("MokuroReader: Showing text popup for block:", block_text)
     
     -- CRITICAL: Capture self references before creating callbacks
     -- Inside callbacks, 'self' will be mokuro_popup, not MokuroReader!
     local ui = self.ui
+    local reader = self  -- Capture MokuroReader instance
+    local captured_block = block  -- Capture the block for later use
+    local captured_block_text = block_text  -- Also capture the text
     local mokuro_popup  -- Forward declaration, will be set below
     
     -- Use ScrollTextWidget like DictQuickLookup does - it handles everything internally
@@ -301,7 +313,7 @@ function MokuroReader:onMokuroTap(ges)
     
     -- Create the popup container first (we need it as parent for text_widget)
     mokuro_popup = InputContainer:new{
-        modal = true,
+        modal = false,  -- Non-modal so dictionary can open on top
     }
     self.mokuro_popup = mokuro_popup  -- Keep reference in MokuroReader too
     
@@ -425,14 +437,16 @@ function MokuroReader:onMokuroTap(ges)
                         end
                     end
                     
-                    -- Close the popup first (use captured local variable)
-                    UIManager:close(mokuro_popup)
+                    -- DON'T close the popup - let the dictionary open on top of it
+                    -- The popup stays underneath, like with footnotes
                     
-                    -- Trigger dictionary lookup (use captured local variable ui)
+                    -- Trigger dictionary lookup
                     local lookup_target = hold_duration < require("ui/time").s(3) and "LookupWord" or "LookupWikipedia"
                     ui:handleEvent(
                         Event:new(lookup_target, cleaned_text)
                     )
+                    
+                    -- No need to reopen - the popup never closed!
                 end
             end, ges)
         end
