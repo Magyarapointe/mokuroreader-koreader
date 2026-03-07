@@ -543,7 +543,41 @@ function MokuroReader:findBlockAtPosition(page_data, tap_pos)
         return nil
     end
     
-    -- Single page mode: original logic
+    -- Preferred path (single page): convert tap from screen -> native page -> mokuro image coordinates.
+    if self.ui and self.ui.view and self.ui.view.screenToPageTransform and self.ui.document and self.ui.document.getNativePageDimensions then
+        local page_pos = self.ui.view:screenToPageTransform({ x = tap_pos.x, y = tap_pos.y })
+        if page_pos then
+            local native = self.ui.document:getNativePageDimensions(page_pos.page)
+            if native and native.w and native.h and native.w > 0 and native.h > 0 then
+                local mokuro_x = page_pos.x * (img_w / native.w)
+                local mokuro_y = page_pos.y * (img_h / native.h)
+
+                logger.dbg(string.format("MokuroReader: Screen (%.1f,%.1f) -> Page (%.2f,%.2f) -> Mokuro (%.1f,%.1f)",
+                                        tap_pos.x, tap_pos.y, page_pos.x, page_pos.y, mokuro_x, mokuro_y))
+
+                for i, block in ipairs(page_data.blocks) do
+                    local box = block.box
+                    if box and #box >= 4 then
+                        local x1 = math.min(box[1], box[3])
+                        local y1 = math.min(box[2], box[4])
+                        local x2 = math.max(box[1], box[3])
+                        local y2 = math.max(box[2], box[4])
+
+                        if mokuro_x >= x1 and mokuro_x <= x2 and
+                           mokuro_y >= y1 and mokuro_y <= y2 then
+                            logger.info(string.format("MokuroReader: Found block %d at tap position (image-relative)", i))
+                            return block
+                        end
+                    end
+                end
+
+                logger.dbg("MokuroReader: No block found at tap position (image-relative)")
+                return nil
+            end
+        end
+    end
+
+    -- Single page fallback: old screen-fit logic
     -- Calculate how the image is scaled on screen
     -- KOReader fits the image to screen, so we need to calculate the scale
     local scale_w = screen_w / img_w
