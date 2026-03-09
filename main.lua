@@ -167,6 +167,124 @@ local function strip_cjk_spaces(s)
 end
 
 --[[
+    Get UTF-8 character at position in string
+    Returns the character and its byte length
+]]--
+local function get_utf8_char(s, pos)
+    if not s or pos > #s then return nil, 0 end
+    
+    local byte = s:byte(pos)
+    if not byte then return nil, 0 end
+    
+    -- Single byte (ASCII)
+    if byte < 0x80 then
+        return s:sub(pos, pos), 1
+    end
+    
+    -- 2-byte UTF-8
+    if byte >= 0xC0 and byte < 0xE0 then
+        return s:sub(pos, pos + 1), 2
+    end
+    
+    -- 3-byte UTF-8 (most CJK characters)
+    if byte >= 0xE0 and byte < 0xF0 then
+        return s:sub(pos, pos + 2), 3
+    end
+    
+    -- 4-byte UTF-8
+    if byte >= 0xF0 then
+        return s:sub(pos, pos + 3), 4
+    end
+    
+    return s:sub(pos, pos), 1
+end
+
+--[[
+    Trim trailing particles from Japanese text selection
+    Only removes known particles, not verb conjugations or word endings.
+    
+    Example: 家に -> 家 (removes the particle に)
+             運んで -> 運んで (keeps te-form conjugation)
+             本にも -> 本 (removes compound particle にも)
+]]--
+local function trim_particles(text)
+    if not text or text == "" then return text end
+    
+    -- Common single-character particles
+    local single_particles = {
+        ["は"] = true, ["が"] = true, ["を"] = true, ["に"] = true,
+        ["へ"] = true, ["で"] = true, ["と"] = true, ["も"] = true,
+        ["か"] = true, ["や"] = true, ["の"] = true, ["ね"] = true,
+        ["よ"] = true, ["な"] = true, ["ぞ"] = true, ["さ"] = true,
+        ["わ"] = true, ["ぜ"] = true, ["ぞ"] = true,
+    }
+    
+    
+    -- Common two-character particles (compound particles)
+    local double_particles = {
+        ["にも"] = true, ["でも"] = true, ["から"] = true, ["まで"] = true,
+        ["では"] = true, ["には"] = true, ["とも"] = true, ["など"] = true,
+        ["のに"] = true, ["ので"] = true, ["けど"] = true, ["だけ"] = true,
+        ["しか"] = true, ["さえ"] = true, ["ほど"] = true, ["って"] = true,
+        ["より"] = true, ["がね"] = true, ["かな"] = true, ["かも"] = true,
+        ["のね"] = true, ["のよ"] = true,
+    }
+    
+    -- Three-character particles
+    local triple_particles = {
+        ["ばかり"] = true, ["だって"] = true, ["なんて"] = true,
+        ["くらい"] = true, ["ぐらい"] = true, ["として"] = true,
+        ["による"] = true,
+    }
+    
+    -- Build list of characters
+    local chars = {}
+    local pos = 1
+    while pos <= #text do
+        local char, len = get_utf8_char(text, pos)
+        if char then
+            table.insert(chars, char)
+            pos = pos + len
+        else
+            break
+        end
+    end
+    
+    if #chars < 2 then return text end
+    
+    -- Check for three-character particle at the end
+    if #chars >= 4 then  -- Need at least 1 char + 3 particle chars
+        local last_three = chars[#chars - 2] .. chars[#chars - 1] .. chars[#chars]
+        if triple_particles[last_three] then
+            local result = table.concat(chars, "", 1, #chars - 3)
+            logger.info("MokuroReader: Trimmed particle from:", text, "to:", result)
+            return result
+        end
+    end
+    
+    -- Check for two-character particle at the end
+    if #chars >= 3 then  -- Need at least 1 char + 2 particle chars
+        local last_two = chars[#chars - 1] .. chars[#chars]
+        if double_particles[last_two] then
+            local result = table.concat(chars, "", 1, #chars - 2)
+            logger.info("MokuroReader: Trimmed particle from:", text, "to:", result)
+            return result
+        end
+    end
+    
+    -- Check for single-character particle at the end
+    local last_char = chars[#chars]
+    if single_particles[last_char] then
+        local result = table.concat(chars, "", 1, #chars - 1)
+        logger.info("MokuroReader: Trimmed particle from:", text, "to:", result)
+        return result
+    end
+    
+    -- No particle found, return original text
+    return text
+end
+
+--[[
     Calculate context from full block text and selected word
     Returns prev_context, next_context (always strings, never nil)
 ]]--
@@ -416,17 +534,21 @@ function MokuroReader:showMokuroPopupWithText(block, block_text)
                     -- CRITICAL: Clean up CJK spaces before dictionary lookup!
                     local cleaned_text = strip_cjk_spaces(selected_text)
                     
+                    -- Trim trailing particles from the selection
+                    local trimmed_text = trim_particles(cleaned_text)
+                    
                     logger.info("MokuroReader: Selected text:", selected_text)
                     logger.info("MokuroReader: Cleaned text:", cleaned_text)
+                    logger.info("MokuroReader: Trimmed text:", trimmed_text)
                     logger.info("MokuroReader: Block text:", block_text)
                     
-                    -- Calculate context (block_text is captured in this closure)
+                    -- Calculate context using the cleaned (untrimmed) text
                     local prev_context, next_context = calculateContext(block_text, cleaned_text)
                     
                     -- Set ui.highlight.selected_text for VocabBuilder's "highlight" field
                     if ui.highlight then
                         ui.highlight.selected_text = {
-                            text = cleaned_text,
+                            text = trimmed_text,
                         }
                         
                         -- Inject our context into the highlight module
@@ -440,10 +562,10 @@ function MokuroReader:showMokuroPopupWithText(block, block_text)
                     -- DON'T close the popup - let the dictionary open on top of it
                     -- The popup stays underneath, like with footnotes
                     
-                    -- Trigger dictionary lookup
+                    -- Trigger dictionary lookup with trimmed text
                     local lookup_target = hold_duration < require("ui/time").s(3) and "LookupWord" or "LookupWikipedia"
                     ui:handleEvent(
-                        Event:new(lookup_target, cleaned_text)
+                        Event:new(lookup_target, trimmed_text)
                     )
                     
                     -- No need to reopen - the popup never closed!
