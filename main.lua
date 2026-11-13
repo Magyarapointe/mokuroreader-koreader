@@ -373,7 +373,7 @@ function MokuroReader:showMokuroPopupWithText(block, block_text)
                     range = Geom:new{
                         x = 0, y = 0,
                         w = Screen:getWidth(),
-                        h = Screen:getHeight(),
+                        h = Screen:getHeight() - height,
                     },
                 },
             },
